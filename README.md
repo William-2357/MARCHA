@@ -44,15 +44,15 @@ specialist backbones (EEGNet, ShallowConvNet, EEG Conformer) and three foundatio
 
 ## Method in brief
 
-**CHA.** Take a frozen encoder φ and calibration features `Z ∈ R^{n×d}`. The two-layer ReLU
-head `f(z) = W₂ ReLU(W₁ z)` is non-convex to train and sensitive to its seed and learning rate
-when only a few trials are available. Following Pilanci & Ergen (2020) and Sahiner et al.
-(2021), we sample `G` ReLU activation patterns `D_g` and solve the equivalent convex program
-(paper Eq. 2):
+**CHA.** Take a frozen encoder $`\phi`$ and calibration features $`Z \in \mathbb{R}^{n \times d}`$.
+The two-layer ReLU head $`f(z) = W_2\,\mathrm{ReLU}(W_1 z)`$ is non-convex to train and
+sensitive to its seed and learning rate when only a few trials are available. Following
+Pilanci & Ergen (2020) and Sahiner et al. (2021), we sample $`G`$ ReLU activation patterns
+$`D_g`$ and solve the equivalent convex program (paper Eq. 2):
 
-```
-min_{v_g, w_g}  ℓ( Σ_g D_g Z (v_g − w_g), y )  +  β Σ_g (‖v_g‖₂ + ‖w_g‖₂)
-s.t.            v_g, w_g ∈ K_g = { v : (2D_g − I) Z v ≥ 0 }
+```math
+\min_{\{v_g, w_g\}_{g=1}^{G}} \; \ell\Big(\sum_{g=1}^{G} D_g Z (v_g - w_g),\, y\Big) + \beta \sum_{g=1}^{G} \big(\|v_g\|_2 + \|w_g\|_2\big)
+\quad \text{s.t.} \quad v_g, w_g \in \mathcal{K}_g = \{ v : (2D_g - I) Z v \ge 0 \}
 ```
 
 The convex program is solved with the batched JAX–ADMM solver from CRONOS (Feng et al., 2024),
@@ -62,15 +62,25 @@ learning-rate or early-stopping choices.
 **A-CHA** works in two stages:
 
 1. **Stage 1 (source prior).** Solve CHA once per source subject. Pool the solutions into a
-   mean prior `v̄_g, w̄_g` and a per-pattern cross-subject variance.
-2. **Stage 2 (anchored calibration solve).** On the target's `n_c` calibration trials, solve
-   the same program plus a quadratic pull toward the prior (paper Eq. 3–4):
+   mean prior $`\bar v_g, \bar w_g`$ and a per-pattern cross-subject variance
+   $`\widehat{\mathrm{Var}}_s(v_g^{(s)})`$.
+2. **Stage 2 (anchored calibration solve).** On the target's $`n_c`$ calibration features
+   $`Z_c`$, solve the same program plus a quadratic pull toward the prior (paper Eq. 3):
 
-```
-+ ½ Σ_g α_g ( ‖v_g − v̄_g‖² + ‖w_g − w̄_g‖² ),     α_g = (c / n_c) · ã_g,     ã_g ∝ 1 / (Var_s(v_g) + ε),  mean(ã_g) = 1
+```math
+\min_{\{v_g, w_g\}_{g=1}^{G}} \; \tfrac{1}{2}\Big\|\sum_{g=1}^{G} D_g Z_c (v_g - w_g) - y_c\Big\|_2^2
++ \beta \sum_{g=1}^{G} \big(\|v_g\|_2 + \|w_g\|_2\big)
++ \tfrac{1}{2} \sum_{g=1}^{G} \alpha_g \big(\|v_g - \bar v_g\|_2^2 + \|w_g - \bar w_g\|_2^2\big)
+\quad \text{s.t.} \quad v_g, w_g \in \mathcal{K}_g
 ```
 
-The `1/n_c` factor makes the anchor strong when calibration data is scarce and weaker as more
+with per-pattern anchor strength (paper Eq. 4)
+
+```math
+\alpha_g = \frac{c}{n_c}\,\tilde a_g, \qquad \tilde a_g \propto \frac{1}{\widehat{\mathrm{Var}}_s(v_g^{(s)}) + \varepsilon}, \qquad \frac{1}{G}\sum_{g=1}^{G} \tilde a_g = 1 .
+```
+
+The $`1/n_c`$ factor makes the anchor strong when calibration data is scarce and weaker as more
 arrives. The per-pattern weight anchors directions that agree across source subjects firmly
 and leaves directions where they disagree free to fit the target. The program stays convex,
 so the same ADMM solver applies. The constant `c = 120` is fixed for every backbone, subject
@@ -107,12 +117,12 @@ unchanged. Use this table to map one onto the other.
 | **A-CHA** (Anchored CHA) | `kadaptive_anchored_cld`, `foundation_sft_kadaptive_anchored_cld` (+ the `ea_*` forms); `adaptation/kadaptive_anchored_cld.py`, `adaptation/foundation_sft_kadaptive_anchored_cld.py` | CHA plus the variance-weighted quadratic anchor toward a pooled per-source-subject prior |
 | **EA+CHA** / **EA+A-CHA** | any `ea_`-prefixed form of the above | Euclidean Alignment composed with the convex head |
 | *(no paper name)* | `anchored_cld`, `foundation_sft_anchored_cld` (+ the `ea_*` forms) | The **earlier** warm-start anchor on source∪weighted-calibration. Superseded by A-CHA; kept for comparison and **not** reported in the paper |
-| anchor strength `c` | `anchor_a_base` × `anchor_n_ref`, env `KADAPT_A_BASE` | Paper Eq. (4): `α_g = (c/n_c)·ã_g` |
-| per-pattern weight `ã_g` | `a_pattern`, selected by `anchor_mode="adaptive"` | `ã_g ∝ 1/Var_s(v_g)`, mean-normalized to 1 |
+| anchor strength $`c`$ | `anchor_a_base` × `anchor_n_ref`, env `KADAPT_A_BASE` | Paper Eq. (4): $`\alpha_g = \frac{c}{n_c}\tilde a_g`$ |
+| per-pattern weight $`\tilde a_g`$ | `a_pattern`, selected by `anchor_mode="adaptive"` | $`\tilde a_g \propto 1/\widehat{\mathrm{Var}}_s(v_g^{(s)})`$, mean-normalized to 1 |
 | Stage 1 / Stage 2 | `fit_stage1_source` / `_fit_stage2` | Source prior solve / anchored calibration solve |
-| calibration budget `k` (minutes) | `k_minutes`, `K`, `--k-minutes` | Minutes of labeled target calibration |
+| calibration budget $`k`$ (minutes) | `k_minutes`, `K`, `--k-minutes` | Minutes of labeled target calibration |
 | BCA | `bca` in the result JSON | Balanced class accuracy (primary metric) |
-| `G` (sampled ReLU patterns) | `n_neurons` / `P_S` | Number of sampled activation patterns in the convex program |
+| $`G`$ (sampled ReLU patterns) | `n_neurons` / `P_S` | Number of sampled activation patterns in the convex program |
 
 > **On the acronym `CLD`.** The code's `cld` name is inherited from the convex-head
 > implementation this project reuses via the `jaxcld` library (Feng, Tan & Pilanci, 2026 —
@@ -331,14 +341,14 @@ too weak and it craters at low K. The `*_kadaptive_anchored_cld` variants
 `adaptation/kadaptive_anchored_cld.py` for specialists) replace it with an **explicit,
 data-relative quadratic anchor** on the **calibration-only** solve — the paper's Eq. (3):
 
-```
-Stage 2:  min_v  ½‖F(v) − y_cal‖²  +  (a_eff/2)‖v − v_anchor‖²  +  beta·grouplasso(v)
-          a_eff = a_base · n_ref / n_cal
+```math
+\text{Stage 2:}\quad \min_{v}\; \tfrac{1}{2}\|F(v) - y_{\mathrm{cal}}\|_2^2 + \tfrac{a_{\mathrm{eff}}}{2}\|v - v_{\mathrm{anchor}}\|_2^2 + \beta\,\mathrm{GroupLasso}(v),
+\qquad a_{\mathrm{eff}} = \frac{a_{\mathrm{base}}\, n_{\mathrm{ref}}}{n_{\mathrm{cal}}}
 ```
 
-In the paper's notation this is `α_g = (c/n_c)·ã_g` (Eq. 4), with `c = anchor_a_base ×
-anchor_n_ref`, `n_c = n_cal`, and `ã_g` the per-pattern weight below. The paper's fixed
-`c=120` is the `2.0 × 60.0` default.
+In the paper's notation this is $`\alpha_g = \frac{c}{n_c}\tilde a_g`$ (Eq. 4), with
+$`c =`$ `anchor_a_base` × `anchor_n_ref`, $`n_c =`$ `n_cal`, and $`\tilde a_g`$ the
+per-pattern weight below. The paper's fixed $`c = 120`$ is the `2.0 × 60.0` default.
 
 The anchor strength `a_eff` **scales inversely with the number of calibration trials**:
 strong when calibration is scarce (low K — it fills the underdetermined null space) and
@@ -347,7 +357,7 @@ term, not by pooling rows. Defaults `anchor_a_base=2.0`, `anchor_n_ref=60.0` (pr
 the tested-best value); `beta=1e-4` fixed, `hp_select=False`.
 
 - **`anchor_mode="adaptive"` (default)** — the paper's variance-weighted anchor: a
-  **per-pattern** prior `a_i ∝ 1/Var_s(v_iˢ)` (paper: `ã_g ∝ 1/Var_s(v_g)`)
+  **per-pattern** prior $`a_i \propto 1/\widehat{\mathrm{Var}}_s(v_i^{(s)})`$ (paper: $`\tilde a_g`$)
   built from a multi-task per-source-subject convex solve (the paper's Stage 1): hyperplanes
   conserved across source subjects are anchored hard, variable ones are left free to fit the
   target. Needs
